@@ -174,6 +174,7 @@ def generate_pdf(
     technicals: dict,
     analysis: dict,
     output_dir: str,
+    critique: dict = None,
 ) -> str:
     """Generate the full PDF report."""
     print(f"[generate_pdf] Building PDF report for {ticker}...")
@@ -202,7 +203,8 @@ def generate_pdf(
     story.append(Paragraph(company_info.get("name", ticker), styles["CoverSubtitle"]))
     story.append(Spacer(1, 0.3 * inch))
     story.append(HRFlowable(width="60%", thickness=2, color=ACCENT_BLUE, spaceAfter=10, spaceBefore=10))
-    story.append(Paragraph("Stock Analysis Report", styles["CoverSubtitle"]))
+    story.append(Paragraph("Stock Analysis Report — V2", styles["CoverSubtitle"]))
+    story.append(Paragraph("Multi-Step Reasoning | Quality Validated | Peer Reviewed", styles["SmallText"]))
     story.append(Paragraph(f"Generated: {today}", styles["CoverSubtitle"]))
     story.append(Spacer(1, 0.5 * inch))
 
@@ -511,12 +513,93 @@ def generate_pdf(
             story.append(Paragraph(f"<b>{period_label} Outlook:</b> {reasoning}", styles["BodyText2"]))
             story.append(Spacer(1, 0.05 * inch))
 
+    # ── Math Breakdown Table (V2) ──
+    math = analysis.get("math_breakdown", {})
+    if math:
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(Paragraph("Valuation Math (EPS × P/E)", styles["SubHeader"]))
+
+        math_header = ["Period", "Scenario", "EPS Growth", "Proj. EPS", "P/E", "Target"]
+        math_rows = [math_header]
+
+        for period, label in [("1_year", "1Y"), ("3_year", "3Y"), ("5_year", "5Y")]:
+            pm = math.get(period, {})
+            for scenario in ["bull", "base", "bear"]:
+                sm = pm.get(scenario, {})
+                if sm:
+                    math_rows.append([
+                        label,
+                        scenario.title(),
+                        f"{sm.get('eps_growth', 'N/A')}",
+                        f"${sm.get('projected_eps', 'N/A')}",
+                        f"{sm.get('assumed_pe', 'N/A')}x",
+                        f"${sm.get('calculated_target', 'N/A')}",
+                    ])
+
+        if len(math_rows) > 1:
+            math_table = Table(math_rows, colWidths=[1.8*cm, 2.2*cm, 2.5*cm, 2.5*cm, 2*cm, 2.5*cm])
+            math_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), DARK_GRAY),
+                ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT_GRAY, WHITE]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(math_table)
+
     story.append(Spacer(1, 0.2 * inch))
+
+    # ═══════════════════════════════════════════
+    # CRITIC REVIEW (V2)
+    # ═══════════════════════════════════════════
+    if critique and not critique.get("error"):
+        story.append(Paragraph("8. Senior PM Review", styles["SectionHeader"]))
+        story.append(HRFlowable(width="100%", thickness=1, color=ACCENT_BLUE, spaceAfter=8))
+
+        conf = critique.get("adjusted_confidence", "N/A")
+        conf_style = "RatingBuy" if conf == "High" else ("RatingHold" if conf == "Medium" else "RatingSell")
+        story.append(Paragraph(f"Reviewer Confidence: {conf}", styles[conf_style]))
+        story.append(Spacer(1, 0.1 * inch))
+
+        assessment = critique.get("overall_assessment", "")
+        if assessment:
+            story.append(Paragraph(assessment, styles["BodyText2"]))
+            story.append(Spacer(1, 0.1 * inch))
+
+        forecast_review = critique.get("forecast_review", "")
+        if forecast_review:
+            story.append(Paragraph("<b>Forecast Review:</b>", styles["SubHeader"]))
+            story.append(Paragraph(forecast_review, styles["BodyText2"]))
+            story.append(Spacer(1, 0.1 * inch))
+
+        weaknesses = critique.get("weaknesses", [])
+        if weaknesses:
+            story.append(Paragraph("<b>Weaknesses Identified:</b>", styles["SubHeader"]))
+            for w in weaknesses:
+                story.append(Paragraph(f"• {w}", styles["BodyText2"]))
+
+        missed = critique.get("missed_risks", [])
+        if missed:
+            story.append(Paragraph("<b>Additional Risks (from reviewer):</b>", styles["SubHeader"]))
+            for m in missed:
+                story.append(Paragraph(f"• {m}", styles["BodyText2"]))
+
+        key_q = critique.get("key_question", "")
+        if key_q:
+            story.append(Spacer(1, 0.1 * inch))
+            story.append(Paragraph(f"<b>Key Question for Investors:</b> {key_q}", styles["BodyText2"]))
+
+        story.append(Spacer(1, 0.2 * inch))
 
     # ═══════════════════════════════════════════
     # RISK FACTORS
     # ═══════════════════════════════════════════
-    story.append(Paragraph("8. Risk Factors", styles["SectionHeader"]))
+    section_num = "9" if critique and not critique.get("error") else "8"
+    story.append(Paragraph(f"{section_num}. Risk Factors", styles["SectionHeader"]))
     story.append(HRFlowable(width="100%", thickness=1, color=ACCENT_BLUE, spaceAfter=8))
 
     risks = analysis.get("risk_factors", [])
@@ -544,10 +627,16 @@ def generate_pdf(
 
     # Token usage footnote
     token_usage = analysis.get("_token_usage", {})
-    if token_usage:
+    critic_tokens = 0
+    if critique:
+        critic_tokens = critique.get("_token_usage", {}).get("total_tokens", 0)
+    total_tokens = token_usage.get("total_tokens", 0) + critic_tokens
+    steps = token_usage.get("steps", 1)
+    if total_tokens:
         story.append(Spacer(1, 0.1 * inch))
         story.append(Paragraph(
-            f"Analysis powered by OpenAI GPT-4o | Tokens used: {token_usage.get('total_tokens', 'N/A')}",
+            f"StocksAgent V2 | {steps}-step analysis + critic review | "
+            f"Tokens: {total_tokens} | Est. cost: ${total_tokens * 0.000005:.4f}",
             styles["SmallText"]
         ))
 
